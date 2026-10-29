@@ -1,0 +1,6 @@
+<resources>
+    <string name="app_name">Lisa Dictée</string>
+    <string name="ime_name">Clavier Lisa</string>
+    <string name="bulle_name">Bulle Lisa Dictée</string>
+    <string name="bulle_desc">Affiche la bulle de Lisa quand tu touches une zone de texte, pour dicter. Lisa n\'enregistre ta voix que lorsque tu appuies sur la bulle, et elle colle le texte dicté à l\'endroit de ton curseur.</string>
+</resources>

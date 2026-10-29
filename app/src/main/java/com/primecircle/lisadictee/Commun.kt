@@ -16,7 +16,14 @@ object Prefs {
     fun setCle(c: Context, v: String) = sp(c).edit().putString("cle", v.trim()).apply()
     fun langue(c: Context) = sp(c).getString("langue", "") ?: ""
     fun setLangue(c: Context, v: String) = sp(c).edit().putString("langue", v).apply()
+    /** Langue dans laquelle la bulle traduit (fr = pas de traduction, collage direct). */
+    fun cible(c: Context) = sp(c).getString("cible", "fr") ?: "fr"
+    fun setCible(c: Context, v: String) = sp(c).edit().putString("cible", v).apply()
 }
+
+/** Les langues proposées par la bulle. */
+val LANGUES_BULLE = listOf("fr" to "🇫🇷 FR", "nl" to "🇳🇱 NL", "en" to "🇬🇧 EN", "it" to "🇮🇹 IT", "es" to "🇪🇸 ES", "zh" to "🇨🇳 中文")
+fun libelleLangue(code: String) = LANGUES_BULLE.firstOrNull { it.first == code }?.second ?: code.uppercase()
 
 /** Enregistre la voix en AAC (m4a), léger et bien compris par la transcription. */
 class Enregistreur(private val ctx: Context) {
@@ -88,6 +95,19 @@ object Api {
         } catch (e: Exception) {
             Resultat("", null, "Pas de connexion : ${e.message ?: ""}".take(120))
         } finally { c.disconnect(); f.delete() }
+    }
+
+    /** Traduit un texte déjà dicté, de façon naturelle (fonction « dictee », mode traduction). */
+    fun traduire(ctx: Context, texte: String, cible: String, app: String): Resultat {
+        val c = (URL(URL_DICTEE).openConnection() as HttpURLConnection)
+        return try {
+            c.requestMethod = "POST"; c.doOutput = true; c.connectTimeout = 15000; c.readTimeout = 45000
+            c.setRequestProperty("x-dictee-key", Prefs.cle(ctx)); c.setRequestProperty("Content-Type", "application/json")
+            c.outputStream.use { it.write(JSONObject().put("texte", texte).put("cible", cible).put("app", app).toString().toByteArray()) }
+            val code = c.responseCode
+            val j = JSONObject((if (code < 400) c.inputStream else c.errorStream).bufferedReader().readText())
+            if (code >= 400) Resultat("", null, j.optString("error", "Erreur $code")) else Resultat(j.optString("traduction", ""), null, null)
+        } catch (e: Exception) { Resultat("", null, "Pas de connexion") } finally { c.disconnect() }
     }
 
     /** Ton du texte selon l'application où l'on écrit. */

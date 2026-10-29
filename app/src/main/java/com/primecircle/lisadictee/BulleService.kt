@@ -18,7 +18,9 @@ import android.view.View
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
+import android.widget.TextView
 import android.widget.Toast
 
 /**
@@ -36,6 +38,7 @@ class BulleService : AccessibilityService() {
     private var pkg: String? = null
     private var ecoute = false
     private var occupe = false
+    private var posY = 0
     private val cacher = Runnable { if (!ecoute && !occupe) retirer() }
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
@@ -79,7 +82,7 @@ class BulleService : AccessibilityService() {
                 else -> bouge
             }
         }
-        micro.setOnClickListener { if (!occupe) ecouter(boite, micro) }
+        micro.setOnClickListener { if (!occupe) { posY = p.y; ecouter(boite, micro) } }
         try { wm.addView(boite, p); vue = boite; lp = p } catch (_: Exception) { }
     }
 
@@ -116,6 +119,7 @@ class BulleService : AccessibilityService() {
 
     private fun remettre(boite: LinearLayout, micro: MicroBouton) {
         boite.removeAllViews(); boite.background = null; boite.addView(micro, LinearLayout.LayoutParams(dp(60), dp(60)))
+        lp?.let { if (it.gravity != (Gravity.END or Gravity.CENTER_VERTICAL)) { it.gravity = Gravity.END or Gravity.CENTER_VERTICAL; it.x = dp(6); it.y = posY; try { wm.updateViewLayout(boite, it) } catch (_: Exception) { } } }
     }
 
     private fun terminer(boite: LinearLayout, micro: MicroBouton, valider: BoutonRond, annuler: BoutonRond) {
@@ -133,10 +137,96 @@ class BulleService : AccessibilityService() {
                     r.erreur != null -> Toast.makeText(this, "⚠️ ${r.erreur}", Toast.LENGTH_LONG).show()
                     r.tache != null -> Toast.makeText(this, "✅ Tâche ajoutée : ${r.tache}", Toast.LENGTH_LONG).show()
                     r.texte.isBlank() -> Toast.makeText(this, "Je n'ai rien entendu", Toast.LENGTH_SHORT).show()
-                    else -> coller(r.texte)
+                    else -> carte(boite, micro, r.texte.trim(), app)
                 }
             }
         }.start()
+    }
+
+    /**
+     * La carte après la dictée : le texte en français, les langues en pastilles, l'aperçu de la traduction,
+     * puis « Coller ». La dernière langue choisie est retenue et traduite tout de suite.
+     */
+    private fun carte(boite: LinearLayout, micro: MicroBouton, francais: String, app: String) {
+        occupe = true
+        boite.removeAllViews()
+        boite.background = GradientDrawable().apply { setColor(Color.parseColor("#F2141210")); cornerRadius = dp(22).toFloat() }
+        val largeur = (resources.displayMetrics.widthPixels * 0.86).toInt()
+        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(14), dp(12), dp(14), dp(12)) }
+        fun etiquette(t: String) = TextView(this).apply { text = t; textSize = 11f; setTextColor(Color.parseColor("#8E877E")); letterSpacing = 0.08f }
+        fun bloc(t: String, couleur: String) = TextView(this).apply { text = t; textSize = 15f; setTextColor(Color.parseColor(couleur)); setLineSpacing(0f, 1.15f); setTextIsSelectable(false) }
+
+        col.addView(etiquette("FRANÇAIS"))
+        val fr = bloc(francais, "#D9D3CB")
+        fr.maxLines = 5; fr.movementMethod = android.text.method.ScrollingMovementMethod()
+        col.addView(fr, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(4) })
+
+        // Pastilles de langues
+        val rangee = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val defil = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; addView(rangee) }
+        col.addView(defil, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) })
+
+        val titreTrad = etiquette("")
+        val trad = bloc("", "#FFFFFF").apply { textSize = 16f }
+        val zoneTrad = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; visibility = View.GONE }
+        zoneTrad.addView(titreTrad)
+        trad.maxLines = 8; trad.movementMethod = android.text.method.ScrollingMovementMethod()
+        zoneTrad.addView(trad, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(4) })
+        col.addView(zoneTrad, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) })
+
+        // Boutons
+        val bas = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        val fermer = TextView(this).apply { text = "Fermer"; textSize = 14f; setTextColor(Color.parseColor("#B8B1A8")); gravity = Gravity.CENTER; background = rond("#2C2925"); setPadding(dp(16), dp(10), dp(16), dp(10)) }
+        val collerB = TextView(this).apply { text = "Coller"; textSize = 15f; setTextColor(Color.WHITE); gravity = Gravity.CENTER; setPadding(dp(16), dp(10), dp(16), dp(10))
+            background = GradientDrawable(GradientDrawable.Orientation.TL_BR, intArrayOf(Color.parseColor("#FF8A5B"), Color.parseColor("#E8473A"))).apply { cornerRadius = dp(999).toFloat() } }
+        bas.addView(fermer, LinearLayout.LayoutParams(0, -2, 1f))
+        bas.addView(View(this), LinearLayout.LayoutParams(dp(10), 1))
+        bas.addView(collerB, LinearLayout.LayoutParams(0, -2, 1.4f))
+        col.addView(bas, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(14) })
+
+        var choisie = Prefs.cible(this)
+        val cache = HashMap<String, String>()
+        var aColler = francais
+        var demande = 0
+        val pastilles = HashMap<String, TextView>()
+
+        fun peindre() {
+            for ((code, v) in pastilles) {
+                val actif = code == choisie
+                v.background = if (actif) GradientDrawable(GradientDrawable.Orientation.TL_BR, intArrayOf(Color.parseColor("#FF8A5B"), Color.parseColor("#E8473A"))).apply { cornerRadius = dp(999).toFloat() } else rond("#2C2925")
+                v.setTextColor(if (actif) Color.WHITE else Color.parseColor("#D9D3CB"))
+            }
+        }
+        fun choisir(code: String) {
+            choisie = code; Prefs.setCible(this, code); peindre()
+            if (code == "fr") { zoneTrad.visibility = View.GONE; aColler = francais; collerB.alpha = 1f; collerB.isEnabled = true; return }
+            zoneTrad.visibility = View.VISIBLE
+            titreTrad.text = libelleLangue(code).substringAfter(" ").uppercase()
+            cache[code]?.let { trad.text = it; trad.alpha = 1f; aColler = it; collerB.alpha = 1f; collerB.isEnabled = true; return }
+            trad.text = "Lisa traduit…"; trad.alpha = 0.5f; collerB.alpha = 0.4f; collerB.isEnabled = false
+            val n = ++demande
+            Thread {
+                val r = Api.traduire(this, francais, code, app)
+                ui.post {
+                    if (n != demande || vue == null) return@post
+                    if (r.erreur != null || r.texte.isBlank()) { trad.text = "⚠️ ${r.erreur ?: "Traduction vide"}. Touche la langue pour réessayer."; trad.alpha = 1f; return@post }
+                    cache[code] = r.texte.trim(); trad.text = r.texte.trim(); trad.alpha = 1f; aColler = r.texte.trim(); collerB.alpha = 1f; collerB.isEnabled = true
+                }
+            }.start()
+        }
+        for ((code, lib) in LANGUES_BULLE) {
+            val v = TextView(this).apply { text = lib; textSize = 13f; gravity = Gravity.CENTER; setPadding(dp(12), dp(7), dp(12), dp(7)); setOnClickListener { choisir(code) } }
+            pastilles[code] = v
+            rangee.addView(v, LinearLayout.LayoutParams(-2, -2).apply { marginEnd = dp(6) })
+        }
+
+        val finir = { occupe = false; demande++; boite.background = null; remettre(boite, micro) }
+        fermer.setOnClickListener { finir() }
+        collerB.setOnClickListener { val t = aColler; finir(); ui.postDelayed({ coller(t) }, 80) }
+
+        boite.addView(col, LinearLayout.LayoutParams(largeur, -2))
+        lp?.let { it.y = 0; it.gravity = Gravity.CENTER; try { wm.updateViewLayout(boite, it) } catch (_: Exception) { } }
+        choisir(choisie)
     }
 
     /** Colle à l'endroit du curseur ; à défaut, ajoute le texte au champ ; à défaut, le laisse dans le presse papiers. */

@@ -72,18 +72,60 @@ class BulleService : AccessibilityService() {
         boite.addView(micro, LinearLayout.LayoutParams(dp(60), dp(60)))
         val p = WindowManager.LayoutParams(-2, -2, WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS, PixelFormat.TRANSLUCENT)
-        p.gravity = Gravity.END or Gravity.CENTER_VERTICAL; p.x = dp(6); p.y = dp(60)
-        // On peut déplacer la bulle en la faisant glisser
-        var y0 = 0; var ty = 0f; var bouge = false
+        posY = Prefs.bulleY(this, resources.displayMetrics.heightPixels / 2); gauche = Prefs.bulleGauche(this)
+        placer(p)
+        // La bulle se déplace librement (haut, bas, gauche, droite), puis se range contre le bord le plus proche
+        var x0 = 0; var y0 = 0; var tx = 0f; var ty = 0f; var bouge = false
         micro.setOnTouchListener { _, ev ->
             when (ev.action) {
-                MotionEvent.ACTION_DOWN -> { y0 = p.y; ty = ev.rawY; bouge = false; false }
-                MotionEvent.ACTION_MOVE -> { val d = (ev.rawY - ty).toInt(); if (kotlin.math.abs(d) > dp(8)) { bouge = true; p.y = y0 + d; wm.updateViewLayout(boite, p) }; bouge }
+                MotionEvent.ACTION_DOWN -> {
+                    val l = largeurEcran()
+                    x0 = if (gauche) MARGE else l - boite.width - MARGE
+                    y0 = p.y; tx = ev.rawX; ty = ev.rawY; bouge = false; false
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val dx = (ev.rawX - tx).toInt(); val dy = (ev.rawY - ty).toInt()
+                    if (!bouge && (kotlin.math.abs(dx) > dp(8) || kotlin.math.abs(dy) > dp(8))) { bouge = true; p.gravity = Gravity.TOP or Gravity.START }
+                    if (bouge) { p.x = (x0 + dx).coerceIn(0, largeurEcran() - boite.width); p.y = borneY(y0 + dy); try { wm.updateViewLayout(boite, p) } catch (_: Exception) { } }
+                    bouge
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    if (bouge) ranger(boite, p)
+                    bouge
+                }
                 else -> bouge
             }
         }
-        micro.setOnClickListener { if (!occupe) { posY = p.y; ecouter(boite, micro) } }
+        micro.setOnClickListener { if (!occupe) ecouter(boite, micro) }
         try { wm.addView(boite, p); vue = boite; lp = p } catch (_: Exception) { }
+    }
+
+    private val MARGE_DP = 6
+    private val MARGE get() = dp(MARGE_DP)
+    private var gauche = false
+    private fun largeurEcran() = resources.displayMetrics.widthPixels
+    private fun borneY(y: Int) = y.coerceIn(dp(30), resources.displayMetrics.heightPixels - dp(150))
+
+    /** Place la bulle contre son bord (gauche ou droite) à la hauteur retenue. */
+    private fun placer(p: WindowManager.LayoutParams) {
+        p.gravity = Gravity.TOP or (if (gauche) Gravity.START else Gravity.END); p.x = MARGE; p.y = borneY(posY)
+    }
+
+    /** Après un glissement : glisse en douceur vers le bord le plus proche et retient la position. */
+    private fun ranger(boite: LinearLayout, p: WindowManager.LayoutParams) {
+        val l = largeurEcran()
+        gauche = p.x + boite.width / 2 < l / 2
+        posY = p.y
+        Prefs.setBulle(this, gauche, posY)
+        val cible = if (gauche) MARGE else l - boite.width - MARGE
+        android.animation.ValueAnimator.ofInt(p.x, cible).apply {
+            duration = 220; interpolator = android.view.animation.DecelerateInterpolator()
+            addUpdateListener { p.x = it.animatedValue as Int; try { wm.updateViewLayout(boite, p) } catch (_: Exception) { } }
+            addListener(object : android.animation.AnimatorListenerAdapter() {
+                override fun onAnimationEnd(a: android.animation.Animator) { placer(p); try { wm.updateViewLayout(boite, p) } catch (_: Exception) { } }
+            })
+            start()
+        }
     }
 
     private fun retirer() { vue?.let { try { wm.removeView(it) } catch (_: Exception) { } }; vue = null; onde = null }
@@ -119,7 +161,7 @@ class BulleService : AccessibilityService() {
 
     private fun remettre(boite: LinearLayout, micro: MicroBouton) {
         boite.removeAllViews(); boite.background = null; boite.addView(micro, LinearLayout.LayoutParams(dp(60), dp(60)))
-        lp?.let { if (it.gravity != (Gravity.END or Gravity.CENTER_VERTICAL)) { it.gravity = Gravity.END or Gravity.CENTER_VERTICAL; it.x = dp(6); it.y = posY; try { wm.updateViewLayout(boite, it) } catch (_: Exception) { } } }
+        lp?.let { placer(it); try { wm.updateViewLayout(boite, it) } catch (_: Exception) { } }
     }
 
     private fun terminer(boite: LinearLayout, micro: MicroBouton, valider: BoutonRond, annuler: BoutonRond) {

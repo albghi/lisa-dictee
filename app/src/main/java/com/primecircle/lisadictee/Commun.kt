@@ -19,6 +19,10 @@ object Prefs {
     /** Langue dans laquelle la bulle traduit (fr = pas de traduction, collage direct). */
     fun cible(c: Context) = sp(c).getString("cible", "fr") ?: "fr"
     fun setCible(c: Context, v: String) = sp(c).edit().putString("cible", v).apply()
+    /** Position de la bulle : côté (gauche ou droite) et hauteur. */
+    fun bulleGauche(c: Context) = sp(c).getBoolean("bulle_gauche", false)
+    fun bulleY(c: Context, defaut: Int) = sp(c).getInt("bulle_y", defaut)
+    fun setBulle(c: Context, gauche: Boolean, y: Int) = sp(c).edit().putBoolean("bulle_gauche", gauche).putInt("bulle_y", y).apply()
 }
 
 /** Les langues proposées par la bulle. */

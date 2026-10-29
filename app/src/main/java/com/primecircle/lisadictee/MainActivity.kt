@@ -76,7 +76,7 @@ class MainActivity : Activity() {
                 enTest = false; test.text = "🎙 Appuie, parle, puis appuie à nouveau"
                 val f = rec.arreter(true) ?: run { res.text = "Trop court, recommence."; return@setOnClickListener }
                 res.text = "Lisa écrit…"
-                Thread { val r = Api.envoyer(this, f, ""); ui.post { res.text = r.erreur?.let { "⚠️ $it" } ?: r.tache?.let { "✅ Tâche ajoutée : $it" } ?: r.texte.ifBlank { "Je n'ai rien entendu." } } }.start()
+                Thread { val r = f.resultat(""); ui.post { res.text = r.erreur?.let { "⚠️ $it" } ?: r.tache?.let { "✅ Tâche ajoutée : $it" } ?: r.texte.ifBlank { "Je n'ai rien entendu." } } }.start()
             }
         }
         col.addView(note("\nAstuce : commence par « Lisa, tâche, Tano, … » et la tâche part directement dans Lisa Operator.").apply { gravity = Gravity.START })

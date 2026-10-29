@@ -166,7 +166,7 @@ class LisaIme : InputMethodService() {
         micro.visibility = View.GONE; bandeauEcoute.visibility = View.VISIBLE; touches.alpha = 0.35f; anim.lancer()
     }
 
-    private fun stopEcoute(): java.io.File? { anim.stop(); return rec.arreter(false) }
+    private fun stopEcoute(): Direct? { anim.stop(); return rec.arreter(false) }
 
     private fun terminer() {
         anim.stop()
@@ -174,7 +174,7 @@ class LisaIme : InputMethodService() {
         occupe = true; valider.attendre(true); annuler.isEnabled = false
         val app = Api.appDe(pkg)
         Thread {
-            val r = Api.envoyer(this, f, app)
+            val r = f.resultat(app)
             ui.post {
                 occupe = false; annuler.isEnabled = true
                 when {

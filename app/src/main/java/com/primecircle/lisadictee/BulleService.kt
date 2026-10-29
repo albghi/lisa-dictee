@@ -152,7 +152,7 @@ class BulleService : AccessibilityService() {
         }, 150)
     }
 
-    private fun arreterEcoute(garder: Boolean): java.io.File? {
+    private fun arreterEcoute(garder: Boolean): Direct? {
         anim?.stop(); anim = null; ecoute = false
         val f = if (::rec.isInitialized) rec.arreter(garder) else null
         try { stopService(Intent(this, MicService::class.java)) } catch (_: Exception) { }
@@ -170,7 +170,7 @@ class BulleService : AccessibilityService() {
         valider.attendre(true); annuler.isEnabled = false; onde?.vider()
         val app = Api.appDe(pkg)
         Thread {
-            val r = Api.envoyer(this, f, app)
+            val r = f.resultat(app)
             ui.post {
                 occupe = false
                 valider.attendre(false)

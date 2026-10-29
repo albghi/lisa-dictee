@@ -1,8 +1,15 @@
 package com.primecircle.lisadictee
 
 import android.content.Context
+import android.media.AudioFormat
+import android.media.AudioRecord
 import android.media.MediaRecorder
-import android.os.Build
+import android.util.Base64
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.Response
+import okhttp3.WebSocket
+import okhttp3.WebSocketListener
 import org.json.JSONObject
 import java.io.DataOutputStream
 import java.io.File
@@ -29,40 +36,138 @@ object Prefs {
 val LANGUES_BULLE = listOf("fr" to "🇫🇷 FR", "nl" to "🇳🇱 NL", "en" to "🇬🇧 EN", "it" to "🇮🇹 IT", "es" to "🇪🇸 ES", "zh" to "🇨🇳 中文")
 fun libelleLangue(code: String) = LANGUES_BULLE.firstOrNull { it.first == code }?.second ?: code.uppercase()
 
-/** Enregistre la voix en AAC (m4a), léger et bien compris par la transcription. */
+/**
+ * Enregistre la voix (PCM 16 kHz) et l'envoie en direct à ElevenLabs Scribe v2 Realtime pendant qu'on parle.
+ * Au ✓, il ne reste qu'à valider la dernière seconde : le texte arrive presque tout de suite.
+ * Si le direct n'a pas marché (réseau, jeton), on garde toute la voix et on repasse par l'ancien chemin.
+ */
 class Enregistreur(private val ctx: Context) {
-    private var rec: MediaRecorder? = null
-    var fichier: File = File(ctx.cacheDir, "dictee.m4a"); private set
+    private var ar: AudioRecord? = null
+    private var fil: Thread? = null
+    @Volatile private var niv = 0f
+    @Volatile private var actif = false
+    private var session: Direct? = null
     var debut = 0L; private set
 
     fun demarrer(): Boolean {
         arreter(false)
-        fichier = File(ctx.cacheDir, "dictee-${System.currentTimeMillis()}.m4a")
         return try {
-            val r = if (Build.VERSION.SDK_INT >= 31) MediaRecorder(ctx) else @Suppress("DEPRECATION") MediaRecorder()
-            r.setAudioSource(MediaRecorder.AudioSource.VOICE_RECOGNITION)
-            r.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
-            r.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
-            r.setAudioChannels(1)
-            r.setAudioSamplingRate(16000)
-            r.setAudioEncodingBitRate(48000)
-            r.setOutputFile(fichier.absolutePath)
-            r.prepare(); r.start()
-            rec = r; debut = System.currentTimeMillis(); true
-        } catch (e: Exception) { rec = null; false }
+            val min = AudioRecord.getMinBufferSize(16000, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
+            val a = AudioRecord(MediaRecorder.AudioSource.VOICE_RECOGNITION, 16000, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, maxOf(min, 6400) * 2)
+            if (a.state != AudioRecord.STATE_INITIALIZED) { a.release(); return false }
+            val s = Direct(ctx); session = s; s.ouvrir()
+            a.startRecording(); ar = a; actif = true; debut = System.currentTimeMillis()
+            fil = Thread {
+                val buf = ShortArray(1600) // 100 ms
+                while (actif) {
+                    val n = a.read(buf, 0, buf.size)
+                    if (n > 0) {
+                        var m = 0
+                        val o = ByteArray(n * 2)
+                        for (i in 0 until n) { val v = buf[i].toInt(); val av = if (v < 0) -v else v; if (av > m) m = av; o[2 * i] = (v and 0xff).toByte(); o[2 * i + 1] = ((v shr 8) and 0xff).toByte() }
+                        niv = (m / 32767f).coerceIn(0f, 1f)
+                        s.audio(o)
+                    }
+                }
+            }.also { it.start() }
+            true
+        } catch (e: Exception) { ar = null; session?.fermer(); session = null; false }
     }
 
-    fun niveau(): Float = try { ((rec?.maxAmplitude ?: 0) / 32767f).coerceIn(0f, 1f) } catch (e: Exception) { 0f }
+    fun niveau(): Float = niv
 
-    /** Arrête. Renvoie le fichier si on garde l'enregistrement, sinon l'efface. */
-    fun arreter(garder: Boolean): File? {
-        val r = rec ?: return null
-        rec = null
-        try { r.stop() } catch (_: Exception) { }
-        try { r.release() } catch (_: Exception) { }
-        if (!garder || System.currentTimeMillis() - debut < 400) { fichier.delete(); return null }
-        return fichier
+    /** Arrête. Renvoie la prise de voix si on la garde, sinon ferme tout. */
+    fun arreter(garder: Boolean): Direct? {
+        val a = ar ?: return null
+        ar = null; actif = false
+        try { fil?.join(400) } catch (_: Exception) { }
+        try { a.stop() } catch (_: Exception) { }
+        try { a.release() } catch (_: Exception) { }
+        val s = session ?: return null
+        session = null; niv = 0f
+        if (!garder || System.currentTimeMillis() - debut < 400) { s.fermer(); return null }
+        return s
     }
+}
+
+/** Une prise de voix en direct : transcription au fil de la parole, puis le texte final. */
+class Direct(private val ctx: Context) {
+    private val pcm = java.io.ByteArrayOutputStream()
+    private val attente = ArrayList<ByteArray>()
+    private val verrou = Object()
+    private var ws: WebSocket? = null
+    @Volatile private var ouvert = false
+    @Volatile private var echec = false
+    @Volatile private var dernierEngage = 0L
+    @Volatile private var partiel = ""
+    private val engages = StringBuilder()
+
+    fun ouvrir() {
+        Thread {
+            try {
+                val jeton = Api.jeton(ctx) ?: throw Exception("jeton")
+                val l = Prefs.langue(ctx)
+                val url = "wss://api.elevenlabs.io/v1/speech-to-text/realtime?model_id=scribe_v2_realtime&audio_format=pcm_16000&commit_strategy=manual&token=" + jeton + (if (l.isNotBlank()) "&language_code=$l" else "")
+                ws = CLIENT.newWebSocket(Request.Builder().url(url).build(), object : WebSocketListener() {
+                    override fun onOpen(w: WebSocket, r: Response) {
+                        synchronized(verrou) { ouvert = true; for (b in attente) envoyer(w, b, false); attente.clear() }
+                    }
+                    override fun onMessage(w: WebSocket, t: String) {
+                        val j = try { JSONObject(t) } catch (_: Exception) { return }
+                        when (j.optString("message_type")) {
+                            "partial_transcript" -> partiel = j.optString("text")
+                            "committed_transcript" -> synchronized(engages) { val x = j.optString("text").trim(); if (x.isNotEmpty()) engages.append(x).append(' '); partiel = ""; dernierEngage = System.currentTimeMillis() }
+                            "session_started" -> {}
+                            else -> if (j.has("error")) echec = true
+                        }
+                    }
+                    override fun onFailure(w: WebSocket, t: Throwable, r: Response?) { echec = true }
+                })
+            } catch (e: Exception) { echec = true }
+        }.start()
+    }
+
+    private fun envoyer(w: WebSocket?, b: ByteArray, commit: Boolean) {
+        w?.send(JSONObject().put("message_type", "input_audio_chunk").put("audio_base_64", Base64.encodeToString(b, Base64.NO_WRAP))
+            .put("commit", commit).put("sample_rate", 16000).toString())
+    }
+
+    fun audio(b: ByteArray) {
+        synchronized(verrou) { pcm.write(b); if (ouvert) envoyer(ws, b, false) else attente.add(b) }
+    }
+
+    fun fermer() { try { ws?.close(1000, null) } catch (_: Exception) { } }
+
+    /** Bloquant (à appeler hors de l'écran) : valide la fin, récupère le texte et le fait mettre au propre. */
+    fun resultat(app: String): Resultat {
+        var brut: String? = null
+        val t0 = System.currentTimeMillis()
+        while (!ouvert && !echec && System.currentTimeMillis() - t0 < 2500) Thread.sleep(25)
+        if (ouvert && !echec) {
+            val tc = System.currentTimeMillis()
+            synchronized(verrou) { envoyer(ws, ByteArray(3200), true) } // 100 ms de silence, et on valide
+            while (!echec && dernierEngage < tc && System.currentTimeMillis() - tc < 4000) Thread.sleep(20)
+            synchronized(engages) {
+                if (dernierEngage >= tc || (partiel.isBlank() && engages.isNotEmpty())) brut = engages.toString().trim()
+            }
+        }
+        fermer()
+        val b = brut ?: return Api.envoyer(ctx, wav(), app) // secours : l'ancien chemin, avec toute la voix
+        if (b.isBlank()) return Resultat("", null, null)
+        return Api.nettoyer(ctx, b, app)
+    }
+
+    private fun wav(): File {
+        val data = synchronized(verrou) { pcm.toByteArray() }
+        val f = File(ctx.cacheDir, "dictee-${System.currentTimeMillis()}.wav")
+        val h = java.nio.ByteBuffer.allocate(44).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        h.put("RIFF".toByteArray()).putInt(36 + data.size).put("WAVE".toByteArray()).put("fmt ".toByteArray()).putInt(16).putShort(1).putShort(1)
+            .putInt(16000).putInt(32000).putShort(2).putShort(16).put("data".toByteArray()).putInt(data.size)
+        f.outputStream().use { it.write(h.array()); it.write(data) }
+        return f
+    }
+
+    companion object { val CLIENT: OkHttpClient by lazy { OkHttpClient.Builder().pingInterval(15, java.util.concurrent.TimeUnit.SECONDS).build() } }
 }
 
 data class Resultat(val texte: String, val tache: String?, val erreur: String?)
@@ -87,7 +192,8 @@ object Api {
                 }
                 champ("app", app); champ("source", "android")
                 val l = Prefs.langue(ctx); if (l.isNotBlank()) champ("langue", l)
-                o.writeBytes("--$b\r\nContent-Disposition: form-data; name=\"audio\"; filename=\"voix.m4a\"\r\nContent-Type: audio/mp4\r\n\r\n")
+                val wav = f.name.endsWith(".wav")
+                o.writeBytes("--$b\r\nContent-Disposition: form-data; name=\"audio\"; filename=\"" + (if (wav) "voix.wav" else "voix.m4a") + "\"\r\nContent-Type: " + (if (wav) "audio/wav" else "audio/mp4") + "\r\n\r\n")
                 o.write(f.readBytes()); o.writeBytes("\r\n--$b--\r\n")
             }
             val code = c.responseCode
@@ -99,6 +205,33 @@ object Api {
         } catch (e: Exception) {
             Resultat("", null, "Pas de connexion : ${e.message ?: ""}".take(120))
         } finally { c.disconnect(); f.delete() }
+    }
+
+    /** Jeton à usage unique pour la transcription en direct (la clé ElevenLabs reste sur le serveur). */
+    fun jeton(ctx: Context): String? {
+        val c = (URL("$URL_DICTEE?a=jeton").openConnection() as HttpURLConnection)
+        return try {
+            c.requestMethod = "POST"; c.doOutput = true; c.connectTimeout = 8000; c.readTimeout = 10000
+            c.setRequestProperty("x-dictee-key", Prefs.cle(ctx)); c.setRequestProperty("Content-Type", "application/json")
+            c.outputStream.use { it.write("{}".toByteArray()) }
+            if (c.responseCode >= 400) null else JSONObject(c.inputStream.bufferedReader().readText()).optString("token").ifBlank { null }
+        } catch (e: Exception) { null } finally { c.disconnect() }
+    }
+
+    /** Texte transcrit en direct : le serveur le met au propre (ou crée la tâche si « Lisa, tâche… »). */
+    fun nettoyer(ctx: Context, brut: String, app: String): Resultat {
+        val c = (URL(URL_DICTEE).openConnection() as HttpURLConnection)
+        return try {
+            c.requestMethod = "POST"; c.doOutput = true; c.connectTimeout = 10000; c.readTimeout = 30000
+            c.setRequestProperty("x-dictee-key", Prefs.cle(ctx)); c.setRequestProperty("Content-Type", "application/json")
+            val l = Prefs.langue(ctx)
+            c.outputStream.use { it.write(JSONObject().put("brut", brut).put("app", app).put("source", "android-direct").put("langue", l).toString().toByteArray()) }
+            val code = c.responseCode
+            val j = JSONObject((if (code < 400) c.inputStream else c.errorStream).bufferedReader().readText())
+            if (code >= 400) return Resultat(brut, null, null) // le serveur coince : on colle quand même le texte brut
+            val t = j.optJSONObject("tache")
+            Resultat(j.optString("texte", ""), t?.let { "#${it.optInt("id")} ${it.optString("titre")} · ${it.optString("projet")}" }, null)
+        } catch (e: Exception) { Resultat(brut, null, null) } finally { c.disconnect() }
     }
 
     /** Traduit un texte déjà dicté, de façon naturelle (fonction « dictee », mode traduction). */

@@ -18,6 +18,8 @@ import android.view.View
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import android.view.inputmethod.InputMethodManager
+import android.widget.EditText
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -186,22 +188,46 @@ class BulleService : AccessibilityService() {
     }
 
     /**
-     * La carte après la dictée : le texte en français, les langues en pastilles, l'aperçu de la traduction,
-     * puis « Coller ». La dernière langue choisie est retenue et traduite tout de suite.
+     * La carte après la dictée : le texte en français, modifiable au doigt avec n'importe quel clavier,
+     * un micro pour redicter un morceau à l'endroit du curseur, les langues en pastilles, l'aperçu de la traduction
+     * (lui aussi modifiable), puis « Coller ». La dernière langue choisie est retenue et traduite tout de suite.
      */
-    private fun carte(boite: LinearLayout, micro: MicroBouton, francais: String, app: String) {
+    private fun carte(boite: LinearLayout, micro: MicroBouton, texteInitial: String, app: String) {
         occupe = true
         boite.removeAllViews()
         boite.background = GradientDrawable().apply { setColor(Color.parseColor("#F2141210")); cornerRadius = dp(22).toFloat() }
-        val largeur = (resources.displayMetrics.widthPixels * 0.86).toInt()
+        val largeur = (resources.displayMetrics.widthPixels * 0.9).toInt()
         val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(14), dp(12), dp(14), dp(12)) }
+        val imm = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
         fun etiquette(t: String) = TextView(this).apply { text = t; textSize = 11f; setTextColor(Color.parseColor("#8E877E")); letterSpacing = 0.08f }
-        fun bloc(t: String, couleur: String) = TextView(this).apply { text = t; textSize = 15f; setTextColor(Color.parseColor(couleur)); setLineSpacing(0f, 1.15f); setTextIsSelectable(false) }
+        fun champ(t: String, couleur: String, taille: Float, lignes: Int) = EditText(this).apply {
+            setText(t); textSize = taille; setTextColor(Color.parseColor(couleur)); setLineSpacing(0f, 1.15f)
+            background = rond("#1E1B18", 12); setPadding(dp(10), dp(8), dp(10), dp(8)); gravity = Gravity.TOP or Gravity.START
+            maxLines = lignes; isVerticalScrollBarEnabled = true
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE or android.text.InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+            setHorizontallyScrolling(false); highlightColor = Color.parseColor("#66F0674B")
+        }
 
-        col.addView(etiquette("FRANÇAIS"))
-        val fr = bloc(francais, "#D9D3CB")
-        fr.maxLines = 5; fr.movementMethod = android.text.method.ScrollingMovementMethod()
-        col.addView(fr, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(4) })
+        // Mode saisie : la carte prend le clavier (n'importe lequel) le temps de corriger, puis le rend à l'appli
+        var saisie = false
+        fun modeSaisie(oui: Boolean) {
+            val p = lp ?: return
+            if (oui == saisie) return
+            saisie = oui
+            p.flags = if (oui) (p.flags and WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE.inv()) or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
+                      else p.flags or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+            p.gravity = if (oui) Gravity.TOP or Gravity.CENTER_HORIZONTAL else Gravity.CENTER; p.x = 0; p.y = if (oui) dp(36) else 0
+            try { wm.updateViewLayout(boite, p) } catch (_: Exception) { }
+        }
+
+        // Titre + micro pour redicter
+        val tete = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        tete.addView(etiquette("FRANÇAIS · touche le texte pour corriger"), LinearLayout.LayoutParams(0, -2, 1f))
+        val redire = TextView(this).apply { text = "🎙 Redicter"; textSize = 12f; setTextColor(Color.WHITE); background = rond("#2C2925"); setPadding(dp(10), dp(5), dp(10), dp(5)) }
+        tete.addView(redire)
+        col.addView(tete)
+        val fr = champ(texteInitial, "#E9E3DB", 15f, 6)
+        col.addView(fr, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(6) })
 
         // Pastilles de langues
         val rangee = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
@@ -209,11 +235,10 @@ class BulleService : AccessibilityService() {
         col.addView(defil, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) })
 
         val titreTrad = etiquette("")
-        val trad = bloc("", "#FFFFFF").apply { textSize = 16f }
+        val trad = champ("", "#FFFFFF", 16f, 8)
         val zoneTrad = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; visibility = View.GONE }
         zoneTrad.addView(titreTrad)
-        trad.maxLines = 8; trad.movementMethod = android.text.method.ScrollingMovementMethod()
-        zoneTrad.addView(trad, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(4) })
+        zoneTrad.addView(trad, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(6) })
         col.addView(zoneTrad, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) })
 
         // Boutons
@@ -228,9 +253,10 @@ class BulleService : AccessibilityService() {
 
         var choisie = Prefs.cible(this)
         val cache = HashMap<String, String>()
-        var aColler = francais
         var demande = 0
+        var remplissage = false
         val pastilles = HashMap<String, TextView>()
+        fun pret(oui: Boolean) { collerB.alpha = if (oui) 1f else 0.4f; collerB.isEnabled = oui }
 
         fun peindre() {
             for ((code, v) in pastilles) {
@@ -241,33 +267,107 @@ class BulleService : AccessibilityService() {
         }
         fun choisir(code: String) {
             choisie = code; Prefs.setCible(this, code); peindre()
-            if (code == "fr") { zoneTrad.visibility = View.GONE; aColler = francais; collerB.alpha = 1f; collerB.isEnabled = true; return }
+            if (code == "fr") { zoneTrad.visibility = View.GONE; pret(true); return }
             zoneTrad.visibility = View.VISIBLE
-            titreTrad.text = libelleLangue(code).substringAfter(" ").uppercase()
-            cache[code]?.let { trad.text = it; trad.alpha = 1f; aColler = it; collerB.alpha = 1f; collerB.isEnabled = true; return }
-            trad.text = "Lisa traduit…"; trad.alpha = 0.5f; collerB.alpha = 0.4f; collerB.isEnabled = false
+            titreTrad.text = libelleLangue(code).substringAfter(" ").uppercase() + " · modifiable aussi"
+            val source = fr.text.toString().trim()
+            cache[code]?.let { remplissage = true; trad.setText(it); remplissage = false; trad.alpha = 1f; pret(true); return }
+            if (source.isBlank()) { remplissage = true; trad.setText(""); remplissage = false; pret(false); return }
+            remplissage = true; trad.setText("Lisa traduit…"); remplissage = false; trad.alpha = 0.5f; pret(false)
             val n = ++demande
             Thread {
-                val r = Api.traduire(this, francais, code, app)
+                val r = Api.traduire(this, source, code, app)
                 ui.post {
                     if (n != demande || vue == null) return@post
-                    if (r.erreur != null || r.texte.isBlank()) { trad.text = "⚠️ ${r.erreur ?: "Traduction vide"}. Touche la langue pour réessayer."; trad.alpha = 1f; return@post }
-                    cache[code] = r.texte.trim(); trad.text = r.texte.trim(); trad.alpha = 1f; aColler = r.texte.trim(); collerB.alpha = 1f; collerB.isEnabled = true
+                    remplissage = true
+                    if (r.erreur != null || r.texte.isBlank()) { trad.setText("⚠️ ${r.erreur ?: "Traduction vide"}. Touche la langue pour réessayer."); trad.alpha = 1f; remplissage = false; return@post }
+                    cache[code] = r.texte.trim(); trad.setText(r.texte.trim()); trad.alpha = 1f; remplissage = false; pret(true)
                 }
             }.start()
         }
         for ((code, lib) in LANGUES_BULLE) {
-            val v = TextView(this).apply { text = lib; textSize = 13f; gravity = Gravity.CENTER; setPadding(dp(12), dp(7), dp(12), dp(7)); setOnClickListener { choisir(code) } }
+            val v = TextView(this).apply { text = lib; textSize = 13f; gravity = Gravity.CENTER; setPadding(dp(12), dp(7), dp(12), dp(7)); setOnClickListener { cache.remove(code); choisir(code) } }
             pastilles[code] = v
             rangee.addView(v, LinearLayout.LayoutParams(-2, -2).apply { marginEnd = dp(6) })
         }
 
-        val finir = { occupe = false; demande++; boite.background = null; remettre(boite, micro) }
+        // Toucher un texte = on passe en saisie et le clavier s'ouvre
+        for (e in listOf(fr, trad)) {
+            e.setOnTouchListener { v, ev ->
+                if (ev.action == MotionEvent.ACTION_UP && !saisie) { modeSaisie(true); v.post { v.requestFocus(); imm.showSoftInput(v, InputMethodManager.SHOW_IMPLICIT) } }
+                false
+            }
+        }
+        // Le français a changé : la traduction se refait après une petite pause
+        val retraduire = Runnable { cache.clear(); if (choisie != "fr") choisir(choisie) }
+        fr.addTextChangedListener(object : android.text.TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun afterTextChanged(s: android.text.Editable?) {
+                ui.removeCallbacks(retraduire)
+                if (choisie != "fr") { demande++; pret(false); ui.postDelayed(retraduire, 900) }
+            }
+        })
+        trad.addTextChangedListener(object : android.text.TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun afterTextChanged(s: android.text.Editable?) { if (!remplissage && choisie != "fr") cache[choisie] = s.toString() }
+        })
+
+        // Redicter : Lisa écoute, puis insère (ou remplace la sélection) là où est le curseur
+        var ecouteCarte = false
+        redire.setOnClickListener {
+            if (!ecouteCarte) {
+                if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) return@setOnClickListener
+                try { startForegroundService(Intent(this, MicService::class.java)) } catch (_: Exception) { }
+                ui.postDelayed({
+                    if (!rec.demarrer()) { Toast.makeText(this, "Micro indisponible", Toast.LENGTH_SHORT).show(); return@postDelayed }
+                    ecouteCarte = true; ecoute = true
+                    redire.text = "● Je t'écoute · touche pour finir"; redire.background = rond("#E8473A")
+                }, 150)
+            } else {
+                ecouteCarte = false
+                val prise = arreterEcoute(true)
+                redire.text = "Lisa écrit…"; redire.background = rond("#2C2925"); redire.isEnabled = false
+                val debut = maxOf(0, minOf(fr.selectionStart, fr.selectionEnd)).let { if (fr.hasFocus() || it > 0) it else fr.length() }
+                val fin = maxOf(0, maxOf(fr.selectionStart, fr.selectionEnd)).let { if (fr.hasFocus() || it > 0) it else fr.length() }
+                if (prise == null) { redire.text = "🎙 Redicter"; redire.isEnabled = true; return@setOnClickListener }
+                Thread {
+                    val r = prise.resultat(app)
+                    ui.post {
+                        redire.text = "🎙 Redicter"; redire.isEnabled = true
+                        if (vue == null) return@post
+                        if (r.erreur != null || r.texte.isBlank()) { Toast.makeText(this, r.erreur ?: "Je n'ai rien entendu", Toast.LENGTH_SHORT).show(); return@post }
+                        val ed = fr.text
+                        val a2 = debut.coerceIn(0, ed.length); val b2 = fin.coerceIn(a2, ed.length)
+                        val avant = if (a2 > 0 && !ed[a2 - 1].isWhitespace()) " " else ""
+                        val apres = if (b2 < ed.length && !ed[b2].isWhitespace()) " " else ""
+                        val ins = avant + r.texte.trim() + apres
+                        ed.replace(a2, b2, ins)
+                        fr.setSelection((a2 + ins.length).coerceAtMost(fr.length()))
+                    }
+                }.start()
+            }
+        }
+
+        val finir = {
+            ui.removeCallbacks(retraduire)
+            if (ecouteCarte) { ecouteCarte = false; arreterEcoute(false) }
+            imm.hideSoftInputFromWindow(boite.windowToken, 0)
+            modeSaisie(false)
+            occupe = false; demande++; boite.background = null; remettre(boite, micro)
+        }
         fermer.setOnClickListener { finir() }
-        collerB.setOnClickListener { val t = aColler; finir(); ui.postDelayed({ coller(t) }, 80) }
+        collerB.setOnClickListener {
+            val t = (if (choisie == "fr") fr.text.toString() else trad.text.toString()).trim()
+            val avaitClavier = saisie
+            finir()
+            // Après une correction, on laisse le temps au champ de l'appli de reprendre la main
+            ui.postDelayed({ coller(t) }, if (avaitClavier) 450 else 80)
+        }
 
         boite.addView(col, LinearLayout.LayoutParams(largeur, -2))
-        lp?.let { it.y = 0; it.gravity = Gravity.CENTER; try { wm.updateViewLayout(boite, it) } catch (_: Exception) { } }
+        lp?.let { it.x = 0; it.y = 0; it.gravity = Gravity.CENTER; try { wm.updateViewLayout(boite, it) } catch (_: Exception) { } }
         choisir(choisie)
     }
 

@@ -1,15 +1,8 @@
 package com.primecircle.lisadictee
 
 import android.content.Context
-import android.graphics.Canvas
-import android.graphics.Color
-import android.graphics.Paint
-import android.graphics.RectF
 import android.media.MediaRecorder
 import android.os.Build
-import android.os.Handler
-import android.os.Looper
-import android.view.View
 import org.json.JSONObject
 import java.io.DataOutputStream
 import java.io.File
@@ -108,28 +101,4 @@ object Api {
             else -> ""
         }
     }
-}
-
-/** Petite onde animée pendant que Lisa écoute. */
-class Onde(ctx: Context) : View(ctx) {
-    private val p = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#F0674B") }
-    private val hist = FloatArray(28)
-    fun pousser(n: Float) { System.arraycopy(hist, 1, hist, 0, hist.size - 1); hist[hist.size - 1] = n; invalidate() }
-    fun vider() { hist.fill(0f); invalidate() }
-    override fun onDraw(c: Canvas) {
-        val w = width.toFloat(); val h = height.toFloat(); val pas = w / hist.size
-        for (i in hist.indices) {
-            val bh = (0.12f + hist[i] * 0.88f) * h
-            val x = i * pas + pas * 0.25f
-            c.drawRoundRect(RectF(x, (h - bh) / 2, x + pas * 0.5f, (h + bh) / 2), pas, pas, p)
-        }
-    }
-}
-
-/** Boucle qui fait vivre l'onde. */
-class Animateur(private val e: Enregistreur, private val o: Onde) {
-    private val h = Handler(Looper.getMainLooper())
-    private val r = object : Runnable { override fun run() { o.pousser(e.niveau()); h.postDelayed(this, 70) } }
-    fun lancer() { o.vider(); h.post(r) }
-    fun stop() { h.removeCallbacks(r) }
 }

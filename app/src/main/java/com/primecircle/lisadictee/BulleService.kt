@@ -18,9 +18,7 @@ import android.view.View
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
-import android.widget.Button
 import android.widget.LinearLayout
-import android.widget.TextView
 import android.widget.Toast
 
 /**
@@ -66,12 +64,12 @@ class BulleService : AccessibilityService() {
     private fun afficher() {
         ui.removeCallbacks(cacher)
         if (vue != null) return
-        val boite = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; background = rond("#E6141210"); setPadding(dp(6), dp(6), dp(6), dp(6)) }
-        val micro = Button(this).apply { text = "🎙"; textSize = 20f; background = rond("#F0674B"); setTextColor(Color.WHITE) }
-        boite.addView(micro, LinearLayout.LayoutParams(dp(52), dp(52)))
+        val boite = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(dp(4), dp(4), dp(4), dp(4)) }
+        val micro = MicroBouton(this)
+        boite.addView(micro, LinearLayout.LayoutParams(dp(60), dp(60)))
         val p = WindowManager.LayoutParams(-2, -2, WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS, PixelFormat.TRANSLUCENT)
-        p.gravity = Gravity.END or Gravity.CENTER_VERTICAL; p.x = dp(8); p.y = dp(60)
+        p.gravity = Gravity.END or Gravity.CENTER_VERTICAL; p.x = dp(6); p.y = dp(60)
         // On peut déplacer la bulle en la faisant glisser
         var y0 = 0; var ty = 0f; var bouge = false
         micro.setOnTouchListener { _, ev ->
@@ -87,7 +85,7 @@ class BulleService : AccessibilityService() {
 
     private fun retirer() { vue?.let { try { wm.removeView(it) } catch (_: Exception) { } }; vue = null; onde = null }
 
-    private fun ecouter(boite: LinearLayout, micro: Button) {
+    private fun ecouter(boite: LinearLayout, micro: MicroBouton) {
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             Toast.makeText(this, "Ouvre l'appli Lisa Dictée pour autoriser le micro", Toast.LENGTH_LONG).show(); return
         }
@@ -96,15 +94,16 @@ class BulleService : AccessibilityService() {
             if (!rec.demarrer()) { stopService(Intent(this, MicService::class.java)); Toast.makeText(this, "Micro indisponible", Toast.LENGTH_SHORT).show(); return@postDelayed }
             ecoute = true
             boite.removeAllViews()
-            val annuler = Button(this).apply { text = "✗"; textSize = 20f; background = rond("#3A3530"); setTextColor(Color.WHITE) }
-            val valider = Button(this).apply { text = "✓"; textSize = 20f; background = rond("#2E8B62"); setTextColor(Color.WHITE) }
+            boite.background = GradientDrawable().apply { setColor(Color.parseColor("#EE141210")); cornerRadius = dp(40).toFloat() }
+            val annuler = BoutonRond(this, false)
+            val valider = BoutonRond(this, true)
             val o = Onde(this); onde = o
-            boite.addView(annuler, LinearLayout.LayoutParams(dp(52), dp(52)))
-            boite.addView(o, LinearLayout.LayoutParams(dp(120), dp(40)).apply { marginStart = dp(8); marginEnd = dp(8) })
-            boite.addView(valider, LinearLayout.LayoutParams(dp(52), dp(52)))
+            boite.addView(annuler, LinearLayout.LayoutParams(dp(50), dp(50)))
+            boite.addView(o, LinearLayout.LayoutParams(dp(130), dp(36)).apply { marginStart = dp(6); marginEnd = dp(6) })
+            boite.addView(valider, LinearLayout.LayoutParams(dp(50), dp(50)))
             anim = Animateur(rec, o).also { it.lancer() }
             annuler.setOnClickListener { arreterEcoute(false); remettre(boite, micro) }
-            valider.setOnClickListener { terminer(boite, micro) }
+            valider.setOnClickListener { terminer(boite, micro, valider, annuler) }
         }, 150)
     }
 
@@ -115,21 +114,20 @@ class BulleService : AccessibilityService() {
         return f
     }
 
-    private fun remettre(boite: LinearLayout, micro: Button) {
-        boite.removeAllViews(); boite.addView(micro, LinearLayout.LayoutParams(dp(52), dp(52))); micro.text = "🎙"; micro.isEnabled = true
+    private fun remettre(boite: LinearLayout, micro: MicroBouton) {
+        boite.removeAllViews(); boite.background = null; boite.addView(micro, LinearLayout.LayoutParams(dp(60), dp(60)))
     }
 
-    private fun terminer(boite: LinearLayout, micro: Button) {
+    private fun terminer(boite: LinearLayout, micro: MicroBouton, valider: BoutonRond, annuler: BoutonRond) {
         val f = arreterEcoute(true) ?: run { remettre(boite, micro); return }
         occupe = true
-        boite.removeAllViews()
-        val t = TextView(this).apply { text = "  Lisa écrit…  "; setTextColor(Color.WHITE); textSize = 14f }
-        boite.addView(t)
+        valider.attendre(true); annuler.isEnabled = false; onde?.vider()
         val app = Api.appDe(pkg)
         Thread {
             val r = Api.envoyer(this, f, app)
             ui.post {
                 occupe = false
+                valider.attendre(false)
                 remettre(boite, micro)
                 when {
                     r.erreur != null -> Toast.makeText(this, "⚠️ ${r.erreur}", Toast.LENGTH_LONG).show()

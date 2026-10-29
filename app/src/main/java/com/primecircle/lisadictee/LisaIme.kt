@@ -70,7 +70,13 @@ class LisaIme : InputMethodService() {
         micro.setOnClickListener { commencer() }
         annuler.setOnClickListener { annuler() }
         valider.setOnClickListener { valider() }
-        globe.setOnClickListener { if (Build.VERSION.SDK_INT >= 28) switchToNextInputMethod(false) else @Suppress("DEPRECATION") (getSystemService(INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager).showInputMethodPicker() }
+        // 🌐 : revient au clavier précédent ; s'il n'y en a pas, ouvre la liste des claviers. Appui long : toujours la liste.
+        val liste = { (getSystemService(INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager).showInputMethodPicker() }
+        globe.setOnClickListener {
+            val ok = try { if (Build.VERSION.SDK_INT >= 28) switchToPreviousInputMethod() || switchToNextInputMethod(false) else false } catch (_: Exception) { false }
+            if (!ok) liste()
+        }
+        globe.setOnLongClickListener { liste(); true }
         espace.setOnClickListener { currentInputConnection?.commitText(" ", 1) }
         effacer.setOnClickListener { currentInputConnection?.deleteSurroundingText(1, 0) }
         effacer.setOnLongClickListener { currentInputConnection?.deleteSurroundingText(40, 0); true }

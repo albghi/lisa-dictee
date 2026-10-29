@@ -12,8 +12,18 @@ android {
         versionCode = (System.getenv("GITHUB_RUN_NUMBER") ?: "1").toInt()
         versionName = "0.1." + (System.getenv("GITHUB_RUN_NUMBER") ?: "1")
     }
+    // Signature fixe : chaque nouvelle version s'installe par-dessus l'ancienne, sans désinstaller.
+    signingConfigs {
+        create("lisa") {
+            storeFile = rootProject.file("signature.jks")
+            storePassword = "lisadictee"
+            keyAlias = "lisa"
+            keyPassword = "lisadictee"
+        }
+    }
     buildTypes {
-        release { isMinifyEnabled = false }
+        debug { signingConfig = signingConfigs.getByName("lisa") }
+        release { isMinifyEnabled = false; signingConfig = signingConfigs.getByName("lisa") }
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17

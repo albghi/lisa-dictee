@@ -200,11 +200,17 @@ object Api {
             val txt = (if (code < 400) c.inputStream else c.errorStream).bufferedReader().readText()
             val j = JSONObject(txt)
             if (code >= 400) return Resultat("", null, j.optString("error", "Erreur $code"))
-            val t = j.optJSONObject("tache")
-            Resultat(j.optString("texte", ""), t?.let { "#${it.optInt("id")} ${it.optString("titre")} · ${it.optString("projet")}" }, null)
+            Resultat(j.optString("texte", ""), annonce(j), null)
         } catch (e: Exception) {
             Resultat("", null, "Pas de connexion : ${e.message ?: ""}".take(120))
         } finally { c.disconnect(); f.delete() }
+    }
+
+    /** Message affiché quand la dictée n'est pas un texte à coller : « Lisa, retiens … » ou « Lisa, tâche … ». */
+    private fun annonce(j: JSONObject): String? {
+        j.optString("appris").takeIf { it.isNotBlank() }?.let { return it }
+        val t = j.optJSONObject("tache") ?: return null
+        return "Tâche ajoutée : #${t.optInt("id")} ${t.optString("titre")} · ${t.optString("projet")}"
     }
 
     /** Jeton à usage unique pour la transcription en direct (la clé ElevenLabs reste sur le serveur). */
@@ -229,8 +235,7 @@ object Api {
             val code = c.responseCode
             val j = JSONObject((if (code < 400) c.inputStream else c.errorStream).bufferedReader().readText())
             if (code >= 400) return Resultat(brut, null, null) // le serveur coince : on colle quand même le texte brut
-            val t = j.optJSONObject("tache")
-            Resultat(j.optString("texte", ""), t?.let { "#${it.optInt("id")} ${it.optString("titre")} · ${it.optString("projet")}" }, null)
+            Resultat(j.optString("texte", ""), annonce(j), null)
         } catch (e: Exception) { Resultat(brut, null, null) } finally { c.disconnect() }
     }
 

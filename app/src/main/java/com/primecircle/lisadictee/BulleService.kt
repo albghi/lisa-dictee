@@ -179,7 +179,7 @@ class BulleService : AccessibilityService() {
                 remettre(boite, micro)
                 when {
                     r.erreur != null -> Toast.makeText(this, "⚠️ ${r.erreur}", Toast.LENGTH_LONG).show()
-                    r.tache != null -> Toast.makeText(this, "✅ Tâche ajoutée : ${r.tache}", Toast.LENGTH_LONG).show()
+                    r.tache != null -> Toast.makeText(this, "✅ ${r.tache}", Toast.LENGTH_LONG).show()
                     r.texte.isBlank() -> Toast.makeText(this, "Je n'ai rien entendu", Toast.LENGTH_SHORT).show()
                     else -> carte(boite, micro, r.texte.trim(), app)
                 }
@@ -190,7 +190,7 @@ class BulleService : AccessibilityService() {
     /**
      * La carte après la dictée : le texte en français, modifiable au doigt avec n'importe quel clavier,
      * un micro pour redicter un morceau à l'endroit du curseur, les langues en pastilles, l'aperçu de la traduction
-     * (lui aussi modifiable), puis « Coller ». La dernière langue choisie est retenue et traduite tout de suite.
+     * (lui aussi modifiable), puis « Coller ». La carte s'ouvre toujours sur le français : la traduction ne part que si on touche une langue.
      */
     private fun carte(boite: LinearLayout, micro: MicroBouton, texteInitial: String, app: String) {
         occupe = true
@@ -251,7 +251,8 @@ class BulleService : AccessibilityService() {
         bas.addView(collerB, LinearLayout.LayoutParams(0, -2, 1.4f))
         col.addView(bas, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(14) })
 
-        var choisie = Prefs.cible(this)
+        // 30/10 : la carte s'ouvre toujours sur le français (le texte dicté). On ne traduit que si Albano touche une langue.
+        var choisie = "fr"
         val cache = HashMap<String, String>()
         var demande = 0
         var remplissage = false

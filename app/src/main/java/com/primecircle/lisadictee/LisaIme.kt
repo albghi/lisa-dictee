@@ -179,7 +179,7 @@ class LisaIme : InputMethodService() {
                 occupe = false; annuler.isEnabled = true
                 when {
                     r.erreur != null -> etatRepos("⚠️ ${r.erreur}")
-                    r.tache != null -> etatRepos("✅ Tâche ajoutée : ${r.tache}")
+                    r.tache != null -> etatRepos("✅ ${r.tache}")
                     r.texte.isBlank() -> etatRepos("Je n'ai rien entendu")
                     else -> {
                         val t = if (r.texte.endsWith("\n")) r.texte else r.texte + " "

@@ -30,6 +30,33 @@ object Prefs {
     fun bulleGauche(c: Context) = sp(c).getBoolean("bulle_gauche", false)
     fun bulleY(c: Context, defaut: Int) = sp(c).getInt("bulle_y", defaut)
     fun setBulle(c: Context, gauche: Boolean, y: Int) = sp(c).edit().putBoolean("bulle_gauche", gauche).putInt("bulle_y", y).apply()
+    /** Style d'écriture par famille d'applis (comme Wispr) : formel, decontracte, tres. */
+    fun style(c: Context, famille: String) = sp(c).getString("style_$famille", "formel") ?: "formel"
+    fun setStyle(c: Context, famille: String, v: String) = sp(c).edit().putString("style_$famille", v).apply()
+}
+
+/** Famille de style selon l'appli où l'on écrit. */
+fun familleDe(app: String) = when (app) { "whatsapp", "telegram" -> "messages"; "mail" -> "email"; "x" -> "reseaux"; else -> "autres" }
+
+/** Mise en forme finale : jamais de tiret en début de ligne, des puces à la place. */
+fun puces(t: String) = t.lines().joinToString("\n") { l -> Regex("^(\\s*)[-–—]\\s+").replace(l) { m -> m.groupValues[1] + "• " } }
+
+/** Historique des dictées, gardé seulement sur le téléphone (le serveur ne stocke jamais le texte). */
+object Historique {
+    private fun sp(c: Context) = c.getSharedPreferences("lisa_histo", Context.MODE_PRIVATE)
+    fun liste(c: Context): List<Pair<Long, String>> {
+        val a = try { org.json.JSONArray(sp(c).getString("h", "[]")) } catch (_: Exception) { org.json.JSONArray() }
+        return (0 until a.length()).map { val o = a.getJSONObject(it); o.optLong("t") to o.optString("x") }
+    }
+    fun ajouter(c: Context, texte: String) {
+        if (texte.isBlank()) return
+        val l = listOf(System.currentTimeMillis() to texte) + liste(c).take(199)
+        val a = org.json.JSONArray(); l.forEach { a.put(JSONObject().put("t", it.first).put("x", it.second)) }
+        val mots = texte.split(Regex("\\s+")).count { it.isNotBlank() }
+        sp(c).edit().putString("h", a.toString()).putLong("mots", motsTotal(c) + mots).apply()
+    }
+    fun motsTotal(c: Context) = sp(c).getLong("mots", 0L)
+    fun vider(c: Context) = sp(c).edit().putString("h", "[]").apply()
 }
 
 /** Les langues proposées par la bulle. */
@@ -200,7 +227,8 @@ object Api {
             val txt = (if (code < 400) c.inputStream else c.errorStream).bufferedReader().readText()
             val j = JSONObject(txt)
             if (code >= 400) return Resultat("", null, j.optString("error", "Erreur $code"))
-            Resultat(j.optString("texte", ""), annonce(j), null)
+            val txt = puces(j.optString("texte", "")); Historique.ajouter(ctx, txt)
+            Resultat(txt, annonce(j), null)
         } catch (e: Exception) {
             Resultat("", null, "Pas de connexion : ${e.message ?: ""}".take(120))
         } finally { c.disconnect(); f.delete() }
@@ -231,12 +259,24 @@ object Api {
             c.requestMethod = "POST"; c.doOutput = true; c.connectTimeout = 10000; c.readTimeout = 30000
             c.setRequestProperty("x-dictee-key", Prefs.cle(ctx)); c.setRequestProperty("Content-Type", "application/json")
             val l = Prefs.langue(ctx)
-            c.outputStream.use { it.write(JSONObject().put("brut", brut).put("app", app).put("source", "android-direct").put("langue", l).toString().toByteArray()) }
+            c.outputStream.use { it.write(JSONObject().put("brut", brut).put("app", app).put("source", "android-direct").put("langue", l).put("style", Prefs.style(ctx, familleDe(app))).toString().toByteArray()) }
             val code = c.responseCode
             val j = JSONObject((if (code < 400) c.inputStream else c.errorStream).bufferedReader().readText())
             if (code >= 400) return Resultat(brut, null, null) // le serveur coince : on colle quand même le texte brut
-            Resultat(j.optString("texte", ""), annonce(j), null)
+            val txt = puces(j.optString("texte", "")); Historique.ajouter(ctx, txt)
+            Resultat(txt, annonce(j), null)
         } catch (e: Exception) { Resultat(brut, null, null) } finally { c.disconnect() }
+    }
+
+    /** Dictionnaire et raccourcis (partagés avec le serveur). Bloquant : à appeler hors de l'écran. */
+    fun dico(ctx: Context, action: String, corps: JSONObject = JSONObject()): JSONObject? {
+        val c = (URL("$URL_DICTEE?a=$action").openConnection() as HttpURLConnection)
+        return try {
+            c.requestMethod = "POST"; c.doOutput = true; c.connectTimeout = 10000; c.readTimeout = 20000
+            c.setRequestProperty("x-dictee-key", Prefs.cle(ctx)); c.setRequestProperty("Content-Type", "application/json")
+            c.outputStream.use { it.write(corps.toString().toByteArray()) }
+            JSONObject((if (c.responseCode < 400) c.inputStream else c.errorStream).bufferedReader().readText())
+        } catch (e: Exception) { null } finally { c.disconnect() }
     }
 
     /** Traduit un texte déjà dicté, de façon naturelle (fonction « dictee », mode traduction). */

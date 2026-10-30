@@ -227,8 +227,8 @@ object Api {
             val txt = (if (code < 400) c.inputStream else c.errorStream).bufferedReader().readText()
             val j = JSONObject(txt)
             if (code >= 400) return Resultat("", null, j.optString("error", "Erreur $code"))
-            val txt = puces(j.optString("texte", "")); Historique.ajouter(ctx, txt)
-            Resultat(txt, annonce(j), null)
+            val propre = puces(j.optString("texte", "")); Historique.ajouter(ctx, propre)
+            Resultat(propre, annonce(j), null)
         } catch (e: Exception) {
             Resultat("", null, "Pas de connexion : ${e.message ?: ""}".take(120))
         } finally { c.disconnect(); f.delete() }
